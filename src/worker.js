@@ -20,8 +20,42 @@ export const MAX_RADIUS = 80500;
 export const SEARCH_LIMIT = 50;
 
 const COLUMNS = "s.id, s.name, s.brand, s.address, s.postcode, s.lat, s.lon, s.temporary, s.motorway, s.supermarket, "
-  + "s.amenities, p.fuel, p.pence, p.updated";
-const DETAIL_COLUMNS = `${COLUMNS}, s.phone, s.opening_times, s.fuel_types`;
+  + "s.amenities, s.opening_times, p.fuel, p.pence, p.updated";
+const DETAIL_COLUMNS = `${COLUMNS}, s.phone, s.fuel_types`;
+
+const DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const minutes = (text) => {
+  const [h, m] = String(text ?? "").split(":").map(Number);
+  return Number.isInteger(h) && Number.isInteger(m) ? h * 60 + m : null;
+};
+
+// Whether the hours say open at `now`, in UK time — the app's own rule
+// (OpeningHours.status): 24 hours; open to close; past midnight when the
+// close is before the open, last night's included. Null without hours.
+const LONDON = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London", weekday: "long", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+
+// The UK day and minute, read once per answer rather than per station.
+export function ukClock(now = new Date()) {
+  const parts = Object.fromEntries(LONDON.formatToParts(now).map((p) => [p.type, p.value]));
+  return { today: DAYS.indexOf(parts.weekday.toLowerCase()), minute: Number(parts.hour) * 60 + Number(parts.minute) };
+}
+
+export function openNow(times, now = new Date()) {
+  const days = times?.usual_days;
+  if (!days) return null;
+  const { today, minute } = now instanceof Date ? ukClock(now) : now;
+  const late = days[DAYS[(today + 6) % 7]];
+  const lo = minutes(late?.open), lc = minutes(late?.close);
+  if (late && !late.is_24_hours && lo != null && lc != null && lc < lo && minute < lc) return true;
+  const day = days[DAYS[today]];
+  if (!day) return null;
+  if (day.is_24_hours) return true;
+  const o = minutes(day.open), c = minutes(day.close);
+  if (o == null || c == null || o === c) return false;
+  return c > o ? minute >= o && minute < c : minute >= o;
+}
 
 const parsed = (text) => {
   try { return text ? JSON.parse(text) : null; } catch { return null; }
@@ -37,6 +71,7 @@ export function distance(lat1, lon1, lat2, lon2) {
 // One station per id, its price rows folded into `prices`.
 function stations(rows, lat, lon) {
   const byID = new Map();
+  const clock = ukClock();
   for (const row of rows) {
     let station = byID.get(row.id);
     if (!station) {
@@ -45,9 +80,10 @@ function stations(rows, lat, lon) {
                   distance: lat == null ? null : Math.round(distance(lat, lon, row.lat, row.lon)),
                   temporarilyClosed: row.temporary === 1, motorway: row.motorway === 1, supermarket: row.supermarket === 1,
                   amenities: parsed(row.amenities) ?? [], prices: {} };
+      const times = parsed(row.opening_times);
+      station.openNow = row.temporary === 1 ? false : openNow(times, clock);
       if ("phone" in row) {
-        Object.assign(station, { phone: row.phone || null, openingTimes: parsed(row.opening_times),
-                                 fuelTypes: parsed(row.fuel_types) });
+        Object.assign(station, { phone: row.phone || null, openingTimes: times, fuelTypes: parsed(row.fuel_types) });
       }
       byID.set(row.id, station);
     }

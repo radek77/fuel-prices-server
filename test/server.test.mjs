@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chunks, fuelTypes, priceRows, records, stationRows, upserts } from "../src/fuelfinder.js";
-import worker, { distance } from "../src/worker.js";
+import worker, { distance, openNow } from "../src/worker.js";
 
 test("records are found inside a wrapper", () => {
   assert.deepEqual(records({ data: [{ node_id: "a" }] }), [{ node_id: "a" }]);
@@ -176,4 +176,23 @@ test("upserts: every statement under D1's 100 KB", () => {
   assert.equal(chunks(rows).flat().length, 300);
   for (const line of upserts(rows, []).split("\n")) assert.ok(line.length < 100_000, `${line.length}`);
   assert.deepEqual(chunks(["a", "b"]), [["a", "b"]]);
+});
+
+test("open now, in UK time", () => {
+  const week = { usual_days: {
+    monday: { open: "06:00:00", close: "22:00:00", is_24_hours: false },
+    sunday: { open: "20:00:00", close: "02:00:00", is_24_hours: false },
+    tuesday: { open: "00:00:00", close: "23:59:00", is_24_hours: true },
+    wednesday: { open: "00:00:00", close: "00:00:00", is_24_hours: false } } };
+  // 16 Nov 2026 is a Monday; UK time is UTC in November.
+  assert.equal(openNow(week, new Date("2026-11-16T10:00:00Z")), true);
+  assert.equal(openNow(week, new Date("2026-11-16T05:00:00Z")), false);
+  assert.equal(openNow(week, new Date("2026-11-16T23:00:00Z")), false);
+  assert.equal(openNow(week, new Date("2026-11-16T01:30:00Z")), true);   // Sunday's late hours
+  assert.equal(openNow(week, new Date("2026-11-17T12:00:00Z")), true);
+  assert.equal(openNow(week, new Date("2026-11-18T12:00:00Z")), false);  // closed all day
+  assert.equal(openNow(week, new Date("2026-11-19T12:00:00Z")), null);   // no hours given
+  assert.equal(openNow(null), null);
+  // British Summer Time: 05:30 UTC is 06:30 in London.
+  assert.equal(openNow({ usual_days: { monday: { open: "06:00", close: "22:00" } } }, new Date("2026-06-15T05:30:00Z")), true);
 });
