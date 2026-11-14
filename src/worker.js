@@ -11,8 +11,8 @@
 import { step } from "./fuelfinder.js";
 
 const METRES_PER_DEGREE = 111320;
-// 20 miles: the app's widest distance filter.
-export const MAX_RADIUS = 32200;
+// 50 miles: the app's widest distance filter.
+export const MAX_RADIUS = 80500;
 export const SEARCH_LIMIT = 50;
 
 const COLUMNS = "s.id, s.name, s.brand, s.address, s.postcode, s.lat, s.lon, p.fuel, p.pence, p.updated";
