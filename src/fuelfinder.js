@@ -35,9 +35,12 @@ export function stationRows(rows) {
     const location = row.location ?? row;
     const lat = num(location.latitude), lon = num(location.longitude);
     if (row.node_id == null || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-    const name = [row.trading_name, row.brand_name].find((n) => typeof n === "string" && n) ?? "Station";
+    const text = (value) => (typeof value === "string" ? value.trim() : "");
+    const name = text(row.trading_name) || text(row.brand_name) || "Station";
+    const address = [location.address_line_1, location.address_line_2, location.city].map(text).filter(Boolean).join(", ");
     const closed = row.temporary_closure === true || row.permanent_closure === true ? 1 : 0;
-    out.push(`(${sqlText(row.node_id)},${sqlText(name)},${lat},${lon},${closed})`);
+    out.push(`(${sqlText(row.node_id)},${sqlText(name)},${sqlText(text(row.brand_name))},${sqlText(address)},`
+      + `${sqlText(text(location.postcode))},${lat},${lon},${closed})`);
   }
   return out;
 }
@@ -62,9 +65,12 @@ export function priceRows(rows) {
 export function upserts(stations, prices) {
   const sql = [];
   for (let i = 0; i < stations.length; i += CHUNK) {
-    sql.push(`INSERT INTO stations (id,name,lat,lon,closed) VALUES ${stations.slice(i, i + CHUNK).join(",")} `
-      + "ON CONFLICT(id) DO UPDATE SET name=excluded.name, lat=excluded.lat, lon=excluded.lon, closed=excluded.closed "
-      + "WHERE stations.name IS NOT excluded.name OR stations.lat IS NOT excluded.lat OR stations.lon IS NOT excluded.lon OR stations.closed IS NOT excluded.closed;");
+    sql.push(`INSERT INTO stations (id,name,brand,address,postcode,lat,lon,closed) VALUES ${stations.slice(i, i + CHUNK).join(",")} `
+      + "ON CONFLICT(id) DO UPDATE SET name=excluded.name, brand=excluded.brand, address=excluded.address, postcode=excluded.postcode, "
+      + "lat=excluded.lat, lon=excluded.lon, closed=excluded.closed "
+      + "WHERE stations.name IS NOT excluded.name OR stations.brand IS NOT excluded.brand OR stations.address IS NOT excluded.address "
+      + "OR stations.postcode IS NOT excluded.postcode OR stations.lat IS NOT excluded.lat OR stations.lon IS NOT excluded.lon "
+      + "OR stations.closed IS NOT excluded.closed;");
   }
   for (let i = 0; i < prices.length; i += CHUNK) {
     sql.push(`INSERT INTO prices (id,fuel,pence,updated) VALUES ${prices.slice(i, i + CHUNK).join(",")} `

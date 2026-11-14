@@ -1,6 +1,10 @@
 CREATE TABLE IF NOT EXISTS stations (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  brand TEXT,
+  -- Address lines and town, without the postcode.
+  address TEXT,
+  postcode TEXT,
   lat REAL NOT NULL,
   lon REAL NOT NULL,
   closed INTEGER NOT NULL DEFAULT 0

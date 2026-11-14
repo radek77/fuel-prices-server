@@ -10,11 +10,13 @@ test("records are found inside a wrapper", () => {
 
 test("stations: quotes escaped, closures kept, rows without a place dropped", () => {
   const rows = stationRows([
-    { node_id: "1", trading_name: "Bob's Garage", location: { latitude: "51.5", longitude: -0.7 } },
+    { node_id: "1", trading_name: "Bob's Garage", brand_name: "ESSO",
+      location: { latitude: "51.5", longitude: -0.7, address_line_1: "1 High St", city: "Marlow", postcode: "SL7 1AA" } },
     { node_id: 2, brand_name: "Shell", location: { latitude: 51.6, longitude: -0.8 }, permanent_closure: true },
     { node_id: "3", trading_name: "No place", location: {} },
   ]);
-  assert.deepEqual(rows, ["('1','Bob''s Garage',51.5,-0.7,0)", "('2','Shell',51.6,-0.8,1)"]);
+  assert.deepEqual(rows, ["('1','Bob''s Garage','ESSO','1 High St, Marlow','SL7 1AA',51.5,-0.7,0)",
+                         "('2','Shell','Shell','','',51.6,-0.8,1)"]);
 });
 
 test("prices: short names aliased, out-of-range prices dropped", () => {
@@ -102,4 +104,32 @@ test("cron: averages per fuel once enough prices", async () => {
   await step({ DB }, Date.now(), async () => new Response("", { status: 404 }));
   const averages = DB.sqlite.prepare("SELECT value FROM meta WHERE key='averages'").get().value;
   assert.deepEqual(JSON.parse(averages), { E10: 155 });
+});
+
+test("search: name, brand, address or postcode; nearest first; key checked", async () => {
+  const DB = fakeD1();
+  DB.sqlite.exec(`INSERT INTO stations VALUES
+    ('a','Marlow Service Station','ESSO','1 High St, Marlow','SL7 1AA',51.57,-0.77,0),
+    ('b','Bourne End','SHELL','Station Rd, Bourne End','SL8 5QE',51.58,-0.71,0),
+    ('c','Shut','SHELL','Marlow Rd','SL7 9ZZ',51.57,-0.77,1);
+    INSERT INTO prices VALUES ('a','E10',139.9,NULL),('a','E5',152.9,NULL)`);
+  const env = { APP_KEY: "k", DB };
+  const get = async (query) => {
+    const response = await worker.fetch(new Request(`https://w/search?${query}`, { headers: { "X-App-Key": "k" } }), env);
+    return response.status === 200 ? (await response.json()).stations : response.status;
+  };
+  assert.equal((await worker.fetch(new Request("https://w/search?q=marlow"), env)).status, 401);
+  assert.equal(await get("q=m"), 400);
+  // Closed stations are left out; the address matches too.
+  assert.deepEqual((await get("q=marlow")).map((s) => s.id), ["a"]);
+  assert.deepEqual((await get("q=shell")).map((s) => s.id), ["b"]);
+  assert.deepEqual((await get("q=sl71")).map((s) => s.id), ["a"]);
+  assert.deepEqual((await get("q=SL8 5")).map((s) => s.id), ["b"]);
+  const both = await get("q=SL&lat=51.58&lon=-0.71");
+  assert.deepEqual(both.map((s) => s.id), ["b", "a"]);
+  assert.equal(both[0].distance, 0);
+  assert.deepEqual(both[1].prices.E10, { pence: 139.9, updated: null });
+  assert.equal(both[1].brand, "ESSO");
+  assert.equal(both[1].postcode, "SL7 1AA");
+  assert.equal((await get("q=marlow"))[0].distance, null);
 });
