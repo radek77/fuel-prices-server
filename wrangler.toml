@@ -1,0 +1,11 @@
+name = "fuel-prices"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+preview_urls = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fuel-prices"
+# Printed by `npx wrangler d1 create fuel-prices` (setup step 3).
+database_id = "83926896-cbbc-4df1-ae8d-24aa51fd094a"
