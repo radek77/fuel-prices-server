@@ -13,6 +13,26 @@ const PATHS = { stations: "/api/v1/pfs", prices: "/api/v1/pfs/fuel-prices" };
 const DAY = 24 * 3600 * 1000;
 const MAX_BATCHES = 80;
 const CHUNK = 500;
+// D1 takes a statement of at most 100 KB; a station row with its opening
+// times is about 1.3 KB, so a chunk of rows ends well before.
+const MAX_VALUES = 80_000;
+
+// The rows in runs of at most CHUNK and MAX_VALUES characters.
+export function chunks(rows) {
+  const out = [];
+  let run = [], size = 0;
+  for (const row of rows) {
+    if (run.length && (run.length >= CHUNK || size + row.length > MAX_VALUES)) {
+      out.push(run);
+      run = [];
+      size = 0;
+    }
+    run.push(row);
+    size += row.length + 1;
+  }
+  if (run.length) out.push(run);
+  return out;
+}
 // Fewer prices than this for a fuel give no average: B10 and HVO are rare.
 const MIN_FOR_AVERAGE = 50;
 
@@ -82,14 +102,14 @@ export function priceRows(rows) {
 // One statement per line, for D1's exec.
 export function upserts(stations, prices) {
   const sql = [];
-  for (let i = 0; i < stations.length; i += CHUNK) {
+  for (const run of chunks(stations)) {
     const set = STATION_COLUMNS.slice(1).map((c) => `${c}=excluded.${c}`).join(", ");
     const changed = STATION_COLUMNS.slice(1).map((c) => `stations.${c} IS NOT excluded.${c}`).join(" OR ");
-    sql.push(`INSERT INTO stations (${STATION_COLUMNS.join(",")}) VALUES ${stations.slice(i, i + CHUNK).join(",")} `
+    sql.push(`INSERT INTO stations (${STATION_COLUMNS.join(",")}) VALUES ${run.join(",")} `
       + `ON CONFLICT(id) DO UPDATE SET ${set} WHERE ${changed};`);
   }
-  for (let i = 0; i < prices.length; i += CHUNK) {
-    sql.push(`INSERT INTO prices (id,fuel,pence,updated) VALUES ${prices.slice(i, i + CHUNK).join(",")} `
+  for (const run of chunks(prices)) {
+    sql.push(`INSERT INTO prices (id,fuel,pence,updated) VALUES ${run.join(",")} `
       + "ON CONFLICT(id,fuel) DO UPDATE SET pence=excluded.pence, updated=excluded.updated "
       + "WHERE prices.pence IS NOT excluded.pence OR prices.updated IS NOT excluded.updated;");
   }

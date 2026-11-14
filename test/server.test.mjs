@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fuelTypes, priceRows, records, stationRows, upserts } from "../src/fuelfinder.js";
+import { chunks, fuelTypes, priceRows, records, stationRows, upserts } from "../src/fuelfinder.js";
 import worker, { distance } from "../src/worker.js";
 
 test("records are found inside a wrapper", () => {
@@ -167,4 +167,13 @@ test("station: details for one, not a permanently closed one", async () => {
   assert.equal(station.prices.E10.updated, "2026-11-13T07:00:00Z");
   assert.equal((await get("id=c")).status, 404);
   assert.equal((await get("id=")).status, 400);
+});
+
+test("upserts: every statement under D1's 100 KB", () => {
+  const big = "x".repeat(1300);
+  const rows = Array.from({ length: 300 }, (_, i) => `('${i}','${big}')`);
+  assert.ok(chunks(rows).length > 1);
+  assert.equal(chunks(rows).flat().length, 300);
+  for (const line of upserts(rows, []).split("\n")) assert.ok(line.length < 100_000, `${line.length}`);
+  assert.deepEqual(chunks(["a", "b"]), [["a", "b"]]);
 });
