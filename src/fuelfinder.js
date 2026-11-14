@@ -11,6 +11,8 @@ const PATHS = { stations: "/api/v1/pfs", prices: "/api/v1/pfs/fuel-prices" };
 const DAY = 24 * 3600 * 1000;
 const MAX_BATCHES = 80;
 const CHUNK = 500;
+// Fewer prices than this for a fuel give no average: B10 and HVO are rare.
+const MIN_FOR_AVERAGE = 50;
 
 // D1's exec takes one statement per line, so text has no line breaks.
 export const sqlText = (value) => `'${String(value).replace(/[\r\n]+/g, " ").replaceAll("'", "''")}'`;
@@ -122,6 +124,15 @@ export async function step(env, now = Date.now(), fetchFn = fetch) {
   const first = page[0]?.node_id == null ? "" : String(page[0].node_id);
   if (!first || first === meta.lastFirst || batch > MAX_BATCHES) {
     if (meta.job === "stations") meta.stationsDone = String(now);
+    // The UK average per fuel, for the app to flag a price far off it:
+    // once a day, at the end of a price cycle, worked out by D1.
+    if (meta.job === "prices" && !(now - Number(meta.averagesDone) < DAY)) {
+      const { results: rows } = await env.DB.prepare(
+        `SELECT fuel, ROUND(AVG(pence), 1) AS pence FROM prices GROUP BY fuel HAVING COUNT(*) >= ${MIN_FOR_AVERAGE}`,
+      ).all();
+      meta.averages = JSON.stringify(Object.fromEntries(rows.map((row) => [row.fuel, row.pence])));
+      meta.averagesDone = String(now);
+    }
     meta.job = "";
     return save(env, meta);
   }

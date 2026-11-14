@@ -1,6 +1,7 @@
 // GET /nearby?lat=51.57&lon=-0.77&radius=100 with the X-App-Key header:
 // open stations within `radius` metres (at most 2000), nearest first,
-// each with its prices by Fuel Finder fuel type, in pence per litre.
+// each with its prices by Fuel Finder fuel type, in pence per litre, and
+// `averages`: the UK average per fuel type, for flagging a price far off it.
 // The cron reads Fuel Finder into D1 (src/fuelfinder.js).
 import { step } from "./fuelfinder.js";
 
@@ -50,6 +51,7 @@ export default {
       if (row.fuel) station.prices[row.fuel] = { pence: row.pence, updated: row.updated };
     }
     const stations = [...byID.values()].filter((s) => s.distance <= radius).sort((a, b) => a.distance - b.distance);
-    return Response.json({ stations }, { headers: { "Cache-Control": "max-age=300" } });
+    const averages = await env.DB.prepare("SELECT value FROM meta WHERE key = 'averages'").first("value");
+    return Response.json({ stations, averages: averages ? JSON.parse(averages) : {} }, { headers: { "Cache-Control": "max-age=300" } });
   },
 };

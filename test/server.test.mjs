@@ -27,7 +27,7 @@ test("prices: short names aliased, out-of-range prices dropped", () => {
 });
 
 test("nearby: key checked, nearest first, prices grouped", async () => {
-  const db = { prepare: () => ({ bind: () => ({ all: async () => ({ results: [
+  const db = { prepare: () => ({ first: async () => '{"E10":150}', bind: () => ({ all: async () => ({ results: [
     { id: "far", name: "Far", lat: 51.5005, lon: -0.7, fuel: "E10", pence: 140.9, updated: null },
     { id: "near", name: "Near", lat: 51.5001, lon: -0.7, fuel: "E10", pence: 139.9, updated: "x" },
     { id: "near", name: "Near", lat: 51.5001, lon: -0.7, fuel: "E5", pence: 155.9, updated: "x" },
@@ -38,6 +38,7 @@ test("nearby: key checked, nearest first, prices grouped", async () => {
   const body = await (await worker.fetch(new Request(url, { headers: { "X-App-Key": "k" } }), env)).json();
   assert.deepEqual(body.stations.map((s) => s.name), ["Near", "Far"]);
   assert.deepEqual(Object.keys(body.stations[0].prices), ["E10", "E5"]);
+  assert.deepEqual(body.averages, { E10: 150 });
   assert.ok(Math.abs(distance(51.5, -0.7, 51.5009, -0.7) - 100) < 1);
 });
 
@@ -52,6 +53,7 @@ function fakeD1() {
   const statement = (sql, args = []) => ({
     bind: (...values) => statement(sql, values),
     all: async () => ({ results: db.prepare(sql).all(...args) }),
+    first: async (column) => db.prepare(sql).get(...args)?.[column] ?? null,
     run: () => db.prepare(sql).run(...args),
   });
   return {
@@ -89,4 +91,15 @@ test("cron: stations then prices, one batch a run, token reused", async () => {
   const meta = Object.fromEntries(DB.sqlite.prepare("SELECT key, value FROM meta").all().map((r) => [r.key, r.value]));
   assert.equal(meta.job, "");
   assert.ok(meta.stationsDone);
+  // One E10 price is too few for an average.
+  assert.equal(meta.averages, "{}");
+});
+
+test("cron: averages per fuel once enough prices", async () => {
+  const DB = fakeD1();
+  const values = Array.from({ length: 60 }, (_, i) => `('${i}','E10',${i % 2 ? 150 : 160},NULL)`).join(",");
+  DB.sqlite.exec(`INSERT INTO prices VALUES ${values}; INSERT INTO meta VALUES ('job','prices'),('batch','2'),('stationsDone','${Date.now()}'),('token','t'),('tokenExpires','${Date.now() + 3_600_000}')`);
+  await step({ DB }, Date.now(), async () => new Response("", { status: 404 }));
+  const averages = DB.sqlite.prepare("SELECT value FROM meta WHERE key='averages'").get().value;
+  assert.deepEqual(JSON.parse(averages), { E10: 155 });
 });
