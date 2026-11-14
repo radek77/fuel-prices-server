@@ -4,6 +4,10 @@ compatibility_date = "2026-10-01"
 workers_dev = true
 preview_urls = false
 
+# One Fuel Finder batch a minute (src/fuelfinder.js).
+[triggers]
+crons = ["* * * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "fuel-prices"

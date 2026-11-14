@@ -15,3 +15,9 @@ CREATE TABLE IF NOT EXISTS prices (
   updated TEXT,
   PRIMARY KEY (id, fuel)
 );
+
+-- Where the cron is: job, batch, lastFirst, token, tokenExpires, stationsDone.
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);

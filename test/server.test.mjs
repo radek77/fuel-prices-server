@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { priceRows, records, stationRows, upserts } from "../scripts/fetch.mjs";
+import { priceRows, records, stationRows, upserts } from "../src/fuelfinder.js";
 import worker, { distance } from "../src/worker.js";
 
 test("records are found inside a wrapper", () => {
@@ -39,4 +39,54 @@ test("nearby: key checked, nearest first, prices grouped", async () => {
   assert.deepEqual(body.stations.map((s) => s.name), ["Near", "Far"]);
   assert.deepEqual(Object.keys(body.stations[0].prices), ["E10", "E5"]);
   assert.ok(Math.abs(distance(51.5, -0.7, 51.5009, -0.7) - 100) < 1);
+});
+
+// D1 stand-in on Node's own SQLite, so the real SQL runs.
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { step } from "../src/fuelfinder.js";
+
+function fakeD1() {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  const statement = (sql, args = []) => ({
+    bind: (...values) => statement(sql, values),
+    all: async () => ({ results: db.prepare(sql).all(...args) }),
+    run: () => db.prepare(sql).run(...args),
+  });
+  return {
+    sqlite: db,
+    prepare: (sql) => statement(sql),
+    batch: async (statements) => statements.map((s) => s.run()),
+    // D1's exec: one statement per line.
+    exec: async (sql) => sql.split("\n").forEach((line) => db.exec(line)),
+  };
+}
+
+test("cron: stations then prices, one batch a run, token reused", async () => {
+  const DB = fakeD1();
+  const env = { DB, FF_CLIENT_ID: "id", FF_CLIENT_SECRET: "secret" };
+  const pages = {
+    "/api/v1/pfs?batch-number=1": [{ node_id: "1", trading_name: "Shell Marlow", location: { latitude: 51.57, longitude: -0.77 } }],
+    "/api/v1/pfs/fuel-prices?batch-number=1": { data: [{ node_id: "1", fuel_prices: [{ fuel_type: "E10", price: 139.9 }] }] },
+  };
+  let tokens = 0;
+  const fetchFn = async (url) => {
+    const path = url.replace("https://www.fuel-finder.service.gov.uk", "");
+    if (path.endsWith("generate_access_token")) {
+      tokens++;
+      return Response.json({ data: { access_token: "t", expires_in: 3600 } });
+    }
+    return pages[path] ? Response.json(pages[path]) : new Response("", { status: 404 });
+  };
+  for (let run = 0; run < 4; run++) await step(env, 1_000_000 + run, fetchFn);
+  assert.deepEqual(DB.sqlite.prepare("SELECT name, closed FROM stations").all().map((r) => ({ ...r })),
+                   [{ name: "Shell Marlow", closed: 0 }]);
+  assert.deepEqual(DB.sqlite.prepare("SELECT fuel, pence FROM prices").all().map((r) => ({ ...r })),
+                   [{ fuel: "E10", pence: 139.9 }]);
+  assert.equal(tokens, 1);
+  // Stations done, prices cycle over: the next run starts prices again.
+  const meta = Object.fromEntries(DB.sqlite.prepare("SELECT key, value FROM meta").all().map((r) => [r.key, r.value]));
+  assert.equal(meta.job, "");
+  assert.ok(meta.stationsDone);
 });

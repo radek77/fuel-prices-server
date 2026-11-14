@@ -1,6 +1,9 @@
 // GET /nearby?lat=51.57&lon=-0.77&radius=100 with the X-App-Key header:
 // open stations within `radius` metres (at most 2000), nearest first,
 // each with its prices by Fuel Finder fuel type, in pence per litre.
+// The cron reads Fuel Finder into D1 (src/fuelfinder.js).
+import { step } from "./fuelfinder.js";
+
 const METRES_PER_DEGREE = 111320;
 
 export function distance(lat1, lon1, lat2, lon2) {
@@ -11,6 +14,10 @@ export function distance(lat1, lon1, lat2, lon2) {
 }
 
 export default {
+  async scheduled(event, env) {
+    await step(env);
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname !== "/nearby") return new Response("Not found", { status: 404 });
