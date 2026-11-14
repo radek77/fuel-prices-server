@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { priceRows, records, stationRows, upserts } from "../src/fuelfinder.js";
+import { fuelTypes, priceRows, records, stationRows, upserts } from "../src/fuelfinder.js";
 import worker, { distance } from "../src/worker.js";
 
 test("records are found inside a wrapper", () => {
@@ -12,19 +12,30 @@ test("stations: quotes escaped, closures kept, rows without a place dropped", ()
   const rows = stationRows([
     { node_id: "1", trading_name: "Bob's Garage", brand_name: "ESSO",
       location: { latitude: "51.5", longitude: -0.7, address_line_1: "1 High St", city: "Marlow", postcode: "SL7 1AA" } },
-    { node_id: 2, brand_name: "Shell", location: { latitude: 51.6, longitude: -0.8 }, permanent_closure: true },
+    { node_id: 2, brand_name: "Shell", location: { latitude: 51.6, longitude: -0.8 }, permanent_closure: true,
+      temporary_closure: true, public_phone_number: "01628 123456", amenities: ["car_wash", 3],
+      opening_times: { usual_days: { monday: { open: "06:00", close: "22:00", is_24_hours: false } } },
+      fuel_types: { E10: true, B7_Standard: true, HVO: false }, is_motorway_service_station: true },
     { node_id: "3", trading_name: "No place", location: {} },
   ]);
-  assert.deepEqual(rows, ["('1','Bob''s Garage','ESSO','1 High St, Marlow','SL7 1AA',51.5,-0.7,0)",
-                         "('2','Shell','Shell','','',51.6,-0.8,1)"]);
+  assert.deepEqual(rows, [
+    "('1','Bob''s Garage','ESSO','1 High St, Marlow','SL7 1AA',51.5,-0.7,0,0,'',NULL,NULL,NULL,0,0)",
+    "('2','Shell','Shell','','',51.6,-0.8,1,1,'01628 123456','[\"car_wash\"]',"
+      + "'{\"usual_days\":{\"monday\":{\"open\":\"06:00\",\"close\":\"22:00\",\"is_24_hours\":false}}}',"
+      + "'[\"E10\",\"B7_STANDARD\"]',1,0)"]);
+  assert.deepEqual(fuelTypes(["E5", "B7S", "e10"]), ["E5", "B7_STANDARD", "E10"]);
+  assert.equal(fuelTypes(undefined), null);
 });
 
 test("prices: short names aliased, out-of-range prices dropped", () => {
   const rows = priceRows([{ node_id: "1", fuel_prices: [
     { fuel_type: "B7S", price: "149.9", price_last_updated: "2026-11-14T08:00:00Z" },
+    { fuel_type: "E5", price: 159.9, price_last_updated: "2026-11-14T08:00:00Z",
+      price_change_effective_timestamp: "2026-11-13T07:00:00Z" },
     { fuel_type: "E10", price: 1.399 },
   ] }]);
-  assert.deepEqual(rows, ["('1','B7_STANDARD',149.9,'2026-11-14T08:00:00Z')"]);
+  // When it took effect at the pump, else when it was reported.
+  assert.deepEqual(rows, ["('1','B7_STANDARD',149.9,'2026-11-14T08:00:00Z')", "('1','E5',159.9,'2026-11-13T07:00:00Z')"]);
   assert.match(upserts([], rows), /ON CONFLICT\(id,fuel\) DO UPDATE/);
 });
 
@@ -108,10 +119,10 @@ test("cron: averages per fuel once enough prices", async () => {
 
 test("search: name, brand, address or postcode; nearest first; key checked", async () => {
   const DB = fakeD1();
-  DB.sqlite.exec(`INSERT INTO stations VALUES
-    ('a','Marlow Service Station','ESSO','1 High St, Marlow','SL7 1AA',51.57,-0.77,0),
-    ('b','Bourne End','SHELL','Station Rd, Bourne End','SL8 5QE',51.58,-0.71,0),
-    ('c','Shut','SHELL','Marlow Rd','SL7 9ZZ',51.57,-0.77,1);
+  DB.sqlite.exec(`INSERT INTO stations (id,name,brand,address,postcode,lat,lon,closed,temporary,phone,amenities,opening_times,fuel_types,motorway) VALUES
+    ('a','Marlow Service Station','ESSO','1 High St, Marlow','SL7 1AA',51.57,-0.77,0,0,'01628 1','["car_wash"]','{"usual_days":{}}','["E10"]',0),
+    ('b','Bourne End','SHELL','Station Rd, Bourne End','SL8 5QE',51.58,-0.71,0,1,NULL,NULL,NULL,NULL,1),
+    ('c','Shut','SHELL','Marlow Rd','SL7 9ZZ',51.57,-0.77,1,0,NULL,NULL,NULL,NULL,0);
     INSERT INTO prices VALUES ('a','E10',139.9,NULL),('a','E5',152.9,NULL)`);
   const env = { APP_KEY: "k", DB };
   const get = async (query) => {
@@ -132,4 +143,28 @@ test("search: name, brand, address or postcode; nearest first; key checked", asy
   assert.equal(both[1].brand, "ESSO");
   assert.equal(both[1].postcode, "SL7 1AA");
   assert.equal((await get("q=marlow"))[0].distance, null);
+  // The list carries the flags and amenities, not the details.
+  assert.equal(both[0].temporarilyClosed, true);
+  assert.equal(both[0].motorway, true);
+  assert.deepEqual(both[0].amenities, []);
+  assert.deepEqual(both[1].amenities, ["car_wash"]);
+  assert.equal("phone" in both[1], false);
+});
+
+test("station: details for one, not a permanently closed one", async () => {
+  const DB = fakeD1();
+  DB.sqlite.exec(`INSERT INTO stations (id,name,lat,lon,closed,phone,opening_times,fuel_types) VALUES
+    ('a','A',51.57,-0.77,0,'01628 1','{"usual_days":{"monday":{"open":"06:00"}}}','["E10","HVO"]'),
+    ('c','C',51.57,-0.77,1,NULL,NULL,NULL);
+    INSERT INTO prices VALUES ('a','E10',139.9,'2026-11-13T07:00:00Z')`);
+  const env = { APP_KEY: "k", DB };
+  const get = (query) => worker.fetch(new Request(`https://w/station?${query}`, { headers: { "X-App-Key": "k" } }), env);
+  const [station] = (await (await get("id=a&lat=51.57&lon=-0.77")).json()).stations;
+  assert.equal(station.phone, "01628 1");
+  assert.deepEqual(station.openingTimes, { usual_days: { monday: { open: "06:00" } } });
+  assert.deepEqual(station.fuelTypes, ["E10", "HVO"]);
+  assert.equal(station.distance, 0);
+  assert.equal(station.prices.E10.updated, "2026-11-13T07:00:00Z");
+  assert.equal((await get("id=c")).status, 404);
+  assert.equal((await get("id=")).status, 400);
 });

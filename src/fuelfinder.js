@@ -7,6 +7,8 @@
 
 const BASE = "https://www.fuel-finder.service.gov.uk";
 const ALIAS = { B7S: "B7_STANDARD", B7P: "B7_PREMIUM" };
+const STATION_COLUMNS = ["id", "name", "brand", "address", "postcode", "lat", "lon", "closed", "temporary",
+  "phone", "amenities", "opening_times", "fuel_types", "motorway", "supermarket"];
 const PATHS = { stations: "/api/v1/pfs", prices: "/api/v1/pfs/fuel-prices" };
 const DAY = 24 * 3600 * 1000;
 const MAX_BATCHES = 80;
@@ -38,11 +40,25 @@ export function stationRows(rows) {
     const text = (value) => (typeof value === "string" ? value.trim() : "");
     const name = text(row.trading_name) || text(row.brand_name) || "Station";
     const address = [location.address_line_1, location.address_line_2, location.city].map(text).filter(Boolean).join(", ");
-    const closed = row.temporary_closure === true || row.permanent_closure === true ? 1 : 0;
+    const flag = (value) => (value === true ? 1 : 0);
+    // Kept as Fuel Finder sends them, JSON text, for the app's station sheet.
+    const json = (value) => (value && typeof value === "object" ? sqlText(JSON.stringify(value)) : "NULL");
+    const amenities = Array.isArray(row.amenities) ? row.amenities.filter((a) => typeof a === "string") : null;
     out.push(`(${sqlText(row.node_id)},${sqlText(name)},${sqlText(text(row.brand_name))},${sqlText(address)},`
-      + `${sqlText(text(location.postcode))},${lat},${lon},${closed})`);
+      + `${sqlText(text(location.postcode))},${lat},${lon},${flag(row.permanent_closure)},${flag(row.temporary_closure)},`
+      + `${sqlText(text(row.public_phone_number))},${json(amenities)},${json(row.opening_times)},${json(fuelTypes(row.fuel_types))},`
+      + `${flag(row.is_motorway_service_station)},${flag(row.is_supermarket_service_station)})`);
   }
   return out;
+}
+
+// The fuels a station sells, by the prices' names, from a list or an
+// object of flags (the guide shows the latter, other clients the former).
+export function fuelTypes(value) {
+  const names = Array.isArray(value) ? value
+    : value && typeof value === "object" ? Object.keys(value).filter((key) => value[key] === true) : null;
+  if (!names) return null;
+  return [...new Set(names.filter((n) => typeof n === "string" && n).map((n) => ALIAS[n.toUpperCase()] ?? n.toUpperCase()))];
 }
 
 export function priceRows(rows) {
@@ -54,7 +70,9 @@ export function priceRows(rows) {
       const pence = num(entry.price);
       // Pence per litre; anything else is a typo at the forecourt.
       if (!type || !(pence >= 50 && pence <= 500)) continue;
-      const updated = entry.price_last_updated ? sqlText(entry.price_last_updated) : "NULL";
+      // When the price took effect at the pump; when it was reported, failing that.
+      const when = entry.price_change_effective_timestamp || entry.price_last_updated;
+      const updated = when ? sqlText(when) : "NULL";
       out.push(`(${sqlText(row.node_id)},${sqlText(ALIAS[type] ?? type)},${pence},${updated})`);
     }
   }
@@ -65,12 +83,10 @@ export function priceRows(rows) {
 export function upserts(stations, prices) {
   const sql = [];
   for (let i = 0; i < stations.length; i += CHUNK) {
-    sql.push(`INSERT INTO stations (id,name,brand,address,postcode,lat,lon,closed) VALUES ${stations.slice(i, i + CHUNK).join(",")} `
-      + "ON CONFLICT(id) DO UPDATE SET name=excluded.name, brand=excluded.brand, address=excluded.address, postcode=excluded.postcode, "
-      + "lat=excluded.lat, lon=excluded.lon, closed=excluded.closed "
-      + "WHERE stations.name IS NOT excluded.name OR stations.brand IS NOT excluded.brand OR stations.address IS NOT excluded.address "
-      + "OR stations.postcode IS NOT excluded.postcode OR stations.lat IS NOT excluded.lat OR stations.lon IS NOT excluded.lon "
-      + "OR stations.closed IS NOT excluded.closed;");
+    const set = STATION_COLUMNS.slice(1).map((c) => `${c}=excluded.${c}`).join(", ");
+    const changed = STATION_COLUMNS.slice(1).map((c) => `stations.${c} IS NOT excluded.${c}`).join(" OR ");
+    sql.push(`INSERT INTO stations (${STATION_COLUMNS.join(",")}) VALUES ${stations.slice(i, i + CHUNK).join(",")} `
+      + `ON CONFLICT(id) DO UPDATE SET ${set} WHERE ${changed};`);
   }
   for (let i = 0; i < prices.length; i += CHUNK) {
     sql.push(`INSERT INTO prices (id,fuel,pence,updated) VALUES ${prices.slice(i, i + CHUNK).join(",")} `

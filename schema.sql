@@ -7,7 +7,17 @@ CREATE TABLE IF NOT EXISTS stations (
   postcode TEXT,
   lat REAL NOT NULL,
   lon REAL NOT NULL,
-  closed INTEGER NOT NULL DEFAULT 0
+  -- Permanently; `temporary` is closed for three days or more.
+  closed INTEGER NOT NULL DEFAULT 0,
+  temporary INTEGER NOT NULL DEFAULT 0,
+  phone TEXT,
+  -- JSON, as Fuel Finder sends them: a list of names; usual_days and
+  -- bank_holidays; the fuels sold, by the prices' names.
+  amenities TEXT,
+  opening_times TEXT,
+  fuel_types TEXT,
+  motorway INTEGER NOT NULL DEFAULT 0,
+  supermarket INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS stations_lat ON stations (lat);
 

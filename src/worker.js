@@ -4,9 +4,13 @@
 // GET /search?q=marlow&lat=51.57&lon=-0.77 — open stations whose name,
 //   brand, address or postcode hold `q` (at most SEARCH_LIMIT); nearest
 //   first when a point is given, else by name, `distance` then null.
-// Each station comes with its brand, address, postcode and prices by Fuel
-// Finder fuel type, in pence per litre, and the answer with `averages`: the
-// UK average per fuel type, for flagging a price far off it.
+// GET /station?id=… — one station, not permanently closed, with its phone,
+//   opening times and the fuels it sells as well.
+// Each station comes with its brand, address, postcode, amenities, whether
+// it is temporarily closed or at a motorway or supermarket, and prices by
+// Fuel Finder fuel type, in pence per litre, `updated` when each took
+// effect; the answer with `averages`: the UK average per fuel type, for
+// flagging a price far off it.
 // The cron reads Fuel Finder into D1 (src/fuelfinder.js).
 import { step } from "./fuelfinder.js";
 
@@ -15,7 +19,13 @@ const METRES_PER_DEGREE = 111320;
 export const MAX_RADIUS = 80500;
 export const SEARCH_LIMIT = 50;
 
-const COLUMNS = "s.id, s.name, s.brand, s.address, s.postcode, s.lat, s.lon, p.fuel, p.pence, p.updated";
+const COLUMNS = "s.id, s.name, s.brand, s.address, s.postcode, s.lat, s.lon, s.temporary, s.motorway, s.supermarket, "
+  + "s.amenities, p.fuel, p.pence, p.updated";
+const DETAIL_COLUMNS = `${COLUMNS}, s.phone, s.opening_times, s.fuel_types`;
+
+const parsed = (text) => {
+  try { return text ? JSON.parse(text) : null; } catch { return null; }
+};
 
 export function distance(lat1, lon1, lat2, lon2) {
   const rad = Math.PI / 180;
@@ -32,7 +42,13 @@ function stations(rows, lat, lon) {
     if (!station) {
       station = { id: row.id, name: row.name, brand: row.brand || null, address: row.address || null,
                   postcode: row.postcode || null, latitude: row.lat, longitude: row.lon,
-                  distance: lat == null ? null : Math.round(distance(lat, lon, row.lat, row.lon)), prices: {} };
+                  distance: lat == null ? null : Math.round(distance(lat, lon, row.lat, row.lon)),
+                  temporarilyClosed: row.temporary === 1, motorway: row.motorway === 1, supermarket: row.supermarket === 1,
+                  amenities: parsed(row.amenities) ?? [], prices: {} };
+      if ("phone" in row) {
+        Object.assign(station, { phone: row.phone || null, openingTimes: parsed(row.opening_times),
+                                 fuelTypes: parsed(row.fuel_types) });
+      }
       byID.set(row.id, station);
     }
     if (row.fuel) station.prices[row.fuel] = { pence: row.pence, updated: row.updated };
@@ -56,13 +72,23 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/nearby" && url.pathname !== "/search") return new Response("Not found", { status: 404 });
+    if (!["/nearby", "/search", "/station"].includes(url.pathname)) return new Response("Not found", { status: 404 });
     if (!env.APP_KEY || request.headers.get("X-App-Key") !== env.APP_KEY) {
       return new Response("Unauthorized", { status: 401 });
     }
     const params = url.searchParams;
     const lat = params.has("lat") ? Number(params.get("lat")) : null;
     const lon = params.has("lon") ? Number(params.get("lon")) : null;
+
+    if (url.pathname === "/station") {
+      const id = params.get("id") ?? "";
+      if (!id || id.length > 100) return bad();
+      const { results } = await env.DB.prepare(
+        `SELECT ${DETAIL_COLUMNS} FROM stations s LEFT JOIN prices p ON p.id = s.id WHERE s.id = ?1 AND s.closed = 0`,
+      ).bind(id).all();
+      const point = lat != null && lon != null && isPoint(lat, lon);
+      return results.length ? answer(env, stations(results, point ? lat : null, lon)) : new Response("Not found", { status: 404 });
+    }
 
     if (url.pathname === "/search") {
       const q = (params.get("q") ?? "").trim();
