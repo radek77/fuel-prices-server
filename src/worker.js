@@ -4,6 +4,9 @@
 // GET /search?q=marlow&lat=51.57&lon=-0.77 — open stations whose name,
 //   brand, address or postcode hold `q` (at most SEARCH_LIMIT); nearest
 //   first when a point is given, else by name, `distance` then null.
+// GET /stations?ids=a,b — those stations, at most 50, not permanently
+//   closed (the app's favourites, wherever they are); `distance` from the
+//   point when given.
 // GET /station?id=… — one station, not permanently closed, with its phone,
 //   opening times and the fuels it sells as well.
 // Each station comes with its brand, address, postcode, amenities, whether
@@ -108,13 +111,24 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (!["/nearby", "/search", "/station"].includes(url.pathname)) return new Response("Not found", { status: 404 });
+    if (!["/nearby", "/search", "/station", "/stations"].includes(url.pathname)) return new Response("Not found", { status: 404 });
     if (!env.APP_KEY || request.headers.get("X-App-Key") !== env.APP_KEY) {
       return new Response("Unauthorized", { status: 401 });
     }
     const params = url.searchParams;
     const lat = params.has("lat") ? Number(params.get("lat")) : null;
     const lon = params.has("lon") ? Number(params.get("lon")) : null;
+
+    if (url.pathname === "/stations") {
+      const ids = [...new Set((params.get("ids") ?? "").split(",").filter(Boolean))];
+      if (!ids.length || ids.length > 50 || ids.some((id) => id.length > 100)) return bad();
+      const { results } = await env.DB.prepare(
+        `SELECT ${COLUMNS} FROM stations s LEFT JOIN prices p ON p.id = s.id
+         WHERE s.closed = 0 AND s.id IN (${ids.map((_, i) => `?${i + 1}`).join(",")})`,
+      ).bind(...ids).all();
+      const point = lat != null && lon != null && isPoint(lat, lon);
+      return answer(env, stations(results, point ? lat : null, lon));
+    }
 
     if (url.pathname === "/station") {
       const id = params.get("id") ?? "";

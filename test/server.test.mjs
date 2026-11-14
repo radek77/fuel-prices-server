@@ -196,3 +196,16 @@ test("open now, in UK time", () => {
   // British Summer Time: 05:30 UTC is 06:30 in London.
   assert.equal(openNow({ usual_days: { monday: { open: "06:00", close: "22:00" } } }, new Date("2026-06-15T05:30:00Z")), true);
 });
+
+test("stations: favourites by id, wherever they are", async () => {
+  const DB = fakeD1();
+  DB.sqlite.exec(`INSERT INTO stations (id,name,lat,lon,closed) VALUES ('a','A',51.57,-0.77,0),('b','B',55.9,-3.2,0),('c','C',51.57,-0.77,1);
+    INSERT INTO prices VALUES ('a','E10',139.9,NULL)`);
+  const env = { APP_KEY: "k", DB };
+  const get = (query) => worker.fetch(new Request(`https://w/stations?${query}`, { headers: { "X-App-Key": "k" } }), env);
+  const list = (await (await get("ids=a,b,c,a&lat=51.57&lon=-0.77")).json()).stations;
+  assert.deepEqual(list.map((s) => s.id).sort(), ["a", "b"]);
+  assert.ok(list.find((s) => s.id === "b").distance > 400_000);
+  assert.equal((await get("ids=")).status, 400);
+  assert.equal((await get(`ids=${Array.from({ length: 51 }, (_, i) => i).join(",")}`)).status, 400);
+});
